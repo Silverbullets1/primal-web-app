@@ -18,6 +18,11 @@ import { Kind } from '../../constants';
 import { urlEncode } from '../../utils';
 import { accountStore, addToMuteList, hasPublicKey, removeFromMuteList, setShowPin, showGetStarted } from '../../stores/accountStore';
 import { useTranslatorContext } from '../../contexts/TranslatorContext';
+import {
+  loadTranslationSettings,
+  translateNote,
+  translationErrorMessage,
+} from '../../lib/translation';
 
 const NoteContextMenu: Component<{
   data: NoteContextMenuInfo,
@@ -35,25 +40,58 @@ const NoteContextMenu: Component<{
   const [confirmMuteThread, setConfirmMuteThread] = createSignal(false);
   const [confirmRequestDelete, setConfirmRequestDelete] = createSignal(false);
   const [translatedNote, setTranslatedNote] = createSignal('');
+  const [originalNote, setOriginalNote] = createSignal('');
+  const [showOriginal, setShowOriginal] = createSignal(false);
+  const [translatedMeta, setTranslatedMeta] = createSignal('');
   const [translating, setTranslating] = createSignal(false);
+  const [translateError, setTranslateError] = createSignal('');
 
+  // Explicit user action only — note text is never sent anywhere on render.
   const doTranslateNote = async () => {
     const content = note()?.content || '';
     if (!content) return;
+
     setTranslating(true);
-    const target = translatorCtx?.locale || 'en';
+    setTranslateError('');
+    setShowOriginal(false);
+
     try {
-      const res = await fetch(
-        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${encodeURIComponent(target)}&dt=t&q=${encodeURIComponent(content)}`,
-      );
-      if (!res.ok) throw new Error('translate failed');
-      const data = await res.json();
-      const translated = (data?.[0] || []).map((part: any[]) => part?.[0] || '').join('');
-      setTranslatedNote(translated || content);
-    } catch (e) {
-      setTranslatedNote(content);
+      const outcome = await translateNote(content, translatorCtx?.locale || 'en', loadTranslationSettings());
+      setOriginalNote(content);
+      setTranslatedNote(outcome.translated);
+      setTranslatedMeta([
+        outcome.detected ? `${outcome.detected} → ${translatorCtx?.locale || 'en'}` : '',
+        outcome.entityCount > 0 ? `${outcome.entityCount} reference(s) protected` : '',
+      ].filter(Boolean).join(' · '));
+    } catch (error) {
+      setTranslatedNote('');
+      setOriginalNote('');
+      setTranslatedMeta('');
+      setTranslateError(translationErrorMessage(error));
     }
+
     setTranslating(false);
+  };
+
+  const resetTranslation = () => {
+    setTranslatedNote('');
+    setOriginalNote('');
+    setTranslatedMeta('');
+    setTranslateError('');
+    setShowOriginal(false);
+  };
+
+  const translateErrorMessage = (intlShape: ReturnType<typeof useIntl>): string => {
+    switch (translateError()) {
+      case 'translation-error-not-configured':
+        return intlShape.formatMessage(tActions.noteContext.translateErrorSetup);
+      case 'translation-error-unofficial-disabled':
+        return intlShape.formatMessage(tActions.noteContext.translateErrorUnofficialDisabled);
+      case 'translation-error-provider':
+        return intlShape.formatMessage(tActions.noteContext.translateErrorProvider);
+      default:
+        return intlShape.formatMessage(tActions.noteContext.translateErrorGeneric);
+    }
   };
 
   const [orientation, setOrientation] = createSignal<'down' | 'up'>('down')
@@ -449,13 +487,32 @@ const NoteContextMenu: Component<{
               onAbort={() => setConfirmRequestDelete(false)}
             />
 
-            <Show when={translatedNote()}>
+            <Show when={translatedNote() || translateError()}>
               <div class={styles.translatedModal}>
                 <div class={styles.translatedTitle}>
-                  {translating() ? 'Translating…' : intl.formatMessage(tActions.noteContext.translated)}
+                  {translating()
+                    ? 'Translating…'
+                    : intl.formatMessage(tActions.noteContext.translated)}
                 </div>
-                <div class={styles.translatedBody}>{translatedNote()}</div>
-                <button class={styles.translatedClose} onClick={() => setTranslatedNote('')}>
+                <div class={styles.translatedBody}>
+                  {translateError()
+                    ? translateErrorMessage(intl)
+                    : (showOriginal() ? originalNote() : translatedNote())}
+                </div>
+                <Show when={translatedMeta()}>
+                  <div class={styles.translatedMeta}>{translatedMeta()}</div>
+                </Show>
+                <Show when={translatedNote() && !translateError()}>
+                  <button
+                    class={styles.translatedClose}
+                    onClick={() => setShowOriginal((value) => !value)}
+                  >
+                    {showOriginal()
+                      ? intl.formatMessage(tActions.noteContext.showTranslation)
+                      : intl.formatMessage(tActions.noteContext.showOriginal)}
+                  </button>
+                </Show>
+                <button class={styles.translatedClose} onClick={resetTranslation}>
                   Close
                 </button>
               </div>
